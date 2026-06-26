@@ -1,9 +1,11 @@
 """
 Dukascopy Tick MCP Server
 Runs in plain Termux (Android) — pure Python stdlib for all data work.
-Only external deps: mcp + starlette/uvicorn for HTTP/SSE transport.
+External deps: starlette + uvicorn only (pure Python, no Rust/C needed).
+MCP JSON-RPC 2.0 protocol implemented directly — no mcp/pydantic-core required.
 """
 
+import json
 import lzma
 import logging
 import math
@@ -15,7 +17,11 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+import uvicorn
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
+from starlette.routing import Route
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -166,7 +172,7 @@ def fetch_ticks(
 
 def classify_ticks(ticks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
-    Append 'side' ('buy'/'sell'/'unch') to each tick using the tick rule:
+    Append 'side' ('buy'/'sell') to each tick using the tick rule:
     if mid > prior mid  -> buy
     if mid < prior mid  -> sell
     if unchanged        -> inherit previous side (defaults 'buy' at start)
@@ -196,28 +202,8 @@ def build_footprint(
     """
     Build a footprint/delta profile from classified ticks.
 
-    Args:
-        ticks:            classified tick list (must have 'side' key)
-        bin_size:         price bin width (e.g. 0.25 for XAUUSD)
-        interval_minutes: candle width in minutes
-
-    Returns a list of interval dicts:
-        {
-            "interval_start": ISO str,
-            "interval_end":   ISO str,
-            "bins": [
-                {
-                    "price_lo": float,  # lower edge of bin
-                    "buy_vol":  float,
-                    "sell_vol": float,
-                    "total_vol":float,
-                    "delta":    float,  # buy - sell
-                }
-            ],
-            "total_delta":  float,
-            "cum_delta":    float,
-            "poc_price_lo": float,  # price_lo of bin with max total_vol
-        }
+    Returns a list of interval dicts with per-bin buy/sell/delta volumes
+    and interval summary (total_delta, cumulative_delta, POC).
     """
     if not ticks:
         return []
@@ -227,16 +213,13 @@ def build_footprint(
         return math.floor(price / bin_size + 1e-9) * bin_size
 
     def _parse_ts(iso: str) -> datetime:
-        # e.g. "2024-01-15T10:30:45.123Z"
         return datetime.strptime(iso, "%Y-%m-%dT%H:%M:%S.%fZ").replace(
             tzinfo=timezone.utc
         )
 
     interval_td = timedelta(minutes=interval_minutes)
 
-    # Determine first interval start from first tick's timestamp
     first_ts = _parse_ts(ticks[0]["ts_utc_iso"])
-    # Snap to interval boundary
     epoch = datetime(first_ts.year, first_ts.month, first_ts.day, tzinfo=timezone.utc)
     elapsed = first_ts - epoch
     intervals_elapsed = int(elapsed.total_seconds() // (interval_minutes * 60))
@@ -245,8 +228,6 @@ def build_footprint(
 
     intervals: list[dict[str, Any]] = []
     cum_delta = 0.0
-
-    # bins: dict[float, {"buy_vol": float, "sell_vol": float}]
     current_bins: dict[float, dict[str, float]] = {}
 
     def _flush(start: datetime, end: datetime, bins: dict) -> None:
@@ -289,7 +270,6 @@ def build_footprint(
 
     for tick in ticks:
         ts = _parse_ts(tick["ts_utc_iso"])
-        # Advance interval if needed
         while ts >= interval_end:
             _flush(interval_start, interval_end, current_bins)
             current_bins = {}
@@ -302,24 +282,16 @@ def build_footprint(
         vol = tick["ask_vol"] if tick["side"] == "buy" else tick["bid_vol"]
         current_bins[price_lo][f"{tick['side']}_vol"] += vol
 
-    # Flush remaining
     _flush(interval_start, interval_end, current_bins)
     return intervals
 
 
 # ---------------------------------------------------------------------------
-# MCP server setup
+# Tool functions (plain Python — no MCP decorator needed)
 # ---------------------------------------------------------------------------
 
-mcp = FastMCP(name="dukascopy-ticks")
-
-
-@mcp.tool()
 def health() -> dict[str, Any]:
-    """
-    Health check — returns ok status and list of supported instruments.
-    Use this to verify the tunnel is up and the server is reachable.
-    """
+    """Health check."""
     return {
         "status": "ok",
         "instruments_supported": SUPPORTED_INSTRUMENTS,
@@ -327,36 +299,22 @@ def health() -> dict[str, Any]:
     }
 
 
-@mcp.tool()
 def get_ticks(
     instrument: str,
     date: str,
     hour: int | None = None,
     max_ticks: int = 50_000,
 ) -> list[dict[str, Any]]:
-    """
-    Fetch historical tick data from Dukascopy.
-
-    Args:
-        instrument:  e.g. "XAUUSD", "EURUSD", "USDJPY"
-        date:        "YYYY-MM-DD" (UTC)
-        hour:        0-23. If omitted, all 24 hours are fetched and concatenated.
-        max_ticks:   cap on returned ticks (default 50 000). Raise if you need more.
-
-    Returns a list of tick objects:
-        {ts_utc_iso, ask, bid, mid, ask_vol, bid_vol}
-    """
+    """Fetch historical tick data from Dukascopy."""
     instrument = instrument.upper()
-
     try:
         dt = datetime.strptime(date, "%Y-%m-%d")
     except ValueError:
         return [{"error": f"Invalid date '{date}'; use YYYY-MM-DD"}]
 
     year = dt.year
-    month_0 = dt.month - 1  # Dukascopy zero-indexed month
+    month_0 = dt.month - 1
     day = dt.day
-
     hours_to_fetch = [hour] if hour is not None else list(range(24))
     all_ticks: list[dict[str, Any]] = []
 
@@ -371,19 +329,12 @@ def get_ticks(
             ticks = []
         all_ticks.extend(ticks)
 
-    # Trim to max_ticks
     if len(all_ticks) > max_ticks:
-        log.info(
-            "Trimming from %d to %d ticks (max_ticks limit)",
-            len(all_ticks),
-            max_ticks,
-        )
         all_ticks = all_ticks[:max_ticks]
 
     return all_ticks
 
 
-@mcp.tool()
 def get_footprint(
     instrument: str,
     date: str,
@@ -391,21 +342,8 @@ def get_footprint(
     bin_size: float = 0.5,
     interval_minutes: int = 5,
 ) -> list[dict[str, Any]]:
-    """
-    Build a footprint / delta profile from one hour of tick data.
-
-    Args:
-        instrument:       e.g. "XAUUSD"
-        date:             "YYYY-MM-DD" (UTC)
-        hour:             0-23 (UTC hour)
-        bin_size:         price bin width. Suggested: XAUUSD=0.5, EURUSD=0.0001
-        interval_minutes: candle duration in minutes (e.g. 1, 5, 15)
-
-    Returns per-interval footprint rows with per-bin buy/sell/delta volumes
-    and interval summary (total_delta, cumulative_delta, POC).
-    """
+    """Build a footprint / delta profile from one hour of tick data."""
     instrument = instrument.upper()
-
     try:
         dt = datetime.strptime(date, "%Y-%m-%d")
     except ValueError:
@@ -428,25 +366,177 @@ def get_footprint(
 
 
 # ---------------------------------------------------------------------------
-# Entry point — HTTP/SSE transport for Cloudflare tunnel
+# MCP JSON-RPC protocol — hand-rolled, no pydantic/mcp library needed
+# ---------------------------------------------------------------------------
+
+MCP_PROTOCOL_VERSION = "2024-11-05"
+
+TOOL_SCHEMAS = [
+    {
+        "name": "health",
+        "description": (
+            "Health check — returns ok status and list of supported instruments. "
+            "Use this to verify the tunnel is up and the server is reachable."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
+        "name": "get_ticks",
+        "description": (
+            "Fetch historical tick data from Dukascopy. "
+            "Returns list of {ts_utc_iso, ask, bid, mid, ask_vol, bid_vol}. "
+            "Omit hour to get all 24h (up to max_ticks)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "instrument": {
+                    "type": "string",
+                    "description": "e.g. XAUUSD, EURUSD, USDJPY",
+                },
+                "date": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD (UTC)",
+                },
+                "hour": {
+                    "type": "integer",
+                    "description": "0-23. If omitted, all 24 hours are fetched and concatenated.",
+                },
+                "max_ticks": {
+                    "type": "integer",
+                    "description": "Cap on returned ticks (default 50000).",
+                },
+            },
+            "required": ["instrument", "date"],
+        },
+    },
+    {
+        "name": "get_footprint",
+        "description": (
+            "Build a footprint / delta profile from one hour of tick data. "
+            "Returns per-interval rows with per-bin buy/sell/delta volumes, "
+            "total_delta, cumulative_delta, and POC (point of control)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "instrument": {"type": "string", "description": "e.g. XAUUSD"},
+                "date": {"type": "string", "description": "YYYY-MM-DD (UTC)"},
+                "hour": {"type": "integer", "description": "0-23 (UTC hour)"},
+                "bin_size": {
+                    "type": "number",
+                    "description": "Price bin width. Suggested: XAUUSD=0.5, EURUSD=0.0001",
+                },
+                "interval_minutes": {
+                    "type": "integer",
+                    "description": "Candle width in minutes (e.g. 1, 5, 15)",
+                },
+            },
+            "required": ["instrument", "date", "hour"],
+        },
+    },
+]
+
+TOOL_MAP = {
+    "health": health,
+    "get_ticks": get_ticks,
+    "get_footprint": get_footprint,
+}
+
+
+def _jsonrpc_ok(req_id: Any, result: Any) -> JSONResponse:
+    return JSONResponse({"jsonrpc": "2.0", "id": req_id, "result": result})
+
+
+def _jsonrpc_err(req_id: Any, code: int, message: str) -> JSONResponse:
+    return JSONResponse(
+        {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
+    )
+
+
+async def handle_mcp(request: Request) -> Response:
+    """Single POST /mcp endpoint — handles all MCP JSON-RPC methods."""
+    try:
+        body = await request.json()
+    except Exception:
+        return _jsonrpc_err(None, -32700, "Parse error")
+
+    req_id = body.get("id")  # None for notifications
+    method = body.get("method", "")
+    params = body.get("params") or {}
+
+    log.info("MCP %s id=%s", method, req_id)
+
+    try:
+        if method == "initialize":
+            return _jsonrpc_ok(
+                req_id,
+                {
+                    "protocolVersion": MCP_PROTOCOL_VERSION,
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "dukascopy-ticks", "version": "1.0.0"},
+                },
+            )
+
+        if method == "notifications/initialized":
+            # Notification — no id, no response body required
+            return Response(status_code=204)
+
+        if method == "ping":
+            return _jsonrpc_ok(req_id, {})
+
+        if method == "tools/list":
+            return _jsonrpc_ok(req_id, {"tools": TOOL_SCHEMAS})
+
+        if method == "tools/call":
+            tool_name = params.get("name", "")
+            arguments = params.get("arguments") or {}
+            fn = TOOL_MAP.get(tool_name)
+            if fn is None:
+                return _jsonrpc_err(req_id, -32602, f"Unknown tool: {tool_name!r}")
+            result = fn(**arguments)
+            return _jsonrpc_ok(
+                req_id,
+                {
+                    "content": [
+                        {"type": "text", "text": json.dumps(result, ensure_ascii=False)}
+                    ]
+                },
+            )
+
+        return _jsonrpc_err(req_id, -32601, f"Method not found: {method!r}")
+
+    except TypeError as exc:
+        # Bad arguments passed to tool function
+        return _jsonrpc_err(req_id, -32602, f"Invalid params: {exc}")
+    except Exception as exc:  # noqa: BLE001
+        log.exception("Internal error handling %s", method)
+        return _jsonrpc_err(req_id, -32603, f"Internal error: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# Starlette app
+# ---------------------------------------------------------------------------
+
+app = Starlette(
+    routes=[
+        Route("/mcp", handle_mcp, methods=["POST"]),
+        # OPTIONS for CORS preflight (Cloudflare tunnel / browser clients)
+        Route("/mcp", lambda r: Response(status_code=204), methods=["OPTIONS"]),
+    ]
+)
+
+
+# ---------------------------------------------------------------------------
+# Entry point — bind to 0.0.0.0 so cloudflared can reach it
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8000"))
     host = os.environ.get("HOST", "0.0.0.0")
-
-    # Mutate the settings on the module-level FastMCP instance (tools already
-    # registered via @mcp.tool() decorators above, so we can't create a new one).
-    mcp.settings.host = host
-    mcp.settings.port = port
-    mcp.settings.streamable_http_path = "/mcp"
-
-    # Disable DNS-rebinding protection so Cloudflare tunnel Host headers pass
-    # through. The tunnel provides its own TLS layer, so this is safe.
-    from mcp.server.fastmcp.server import TransportSecuritySettings
-    mcp.settings.transport_security = TransportSecuritySettings(
-        enable_dns_rebinding_protection=False,
-    )
-
-    log.info("Starting Dukascopy MCP server on %s:%d (path=/mcp)", host, port)
-    mcp.run(transport="streamable-http")
+    log.info("Starting Dukascopy MCP server on %s:%d (POST /mcp)", host, port)
+    uvicorn.run(app, host=host, port=port, log_level="info")

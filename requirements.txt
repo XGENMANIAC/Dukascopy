@@ -1,11 +1,8 @@
 # Dukascopy MCP Server — minimal dependencies
 # All data fetching/decoding uses Python stdlib only (urllib, lzma, struct, etc.)
-# NO pandas, numpy, requests, httpx, or anything requiring a C compiler.
+# NO pandas, numpy, requests, httpx, mcp, pydantic, or anything requiring Rust/C.
+# MCP JSON-RPC protocol is implemented directly in server.py using starlette.
 
-# MCP server framework + its HTTP/SSE transport
-mcp[cli]>=1.9.0
-
-# starlette and uvicorn are pulled in automatically by mcp[cli];
-# listed explicitly so Termux pip resolves pure-wheel versions.
+# Pure-Python HTTP server — no compilation needed, works in plain Termux
 starlette>=0.41.0
 uvicorn>=0.30.0

@@ -91,18 +91,24 @@ def test_live_fetch() -> None:
 
 
 def test_no_forbidden_imports() -> None:
-    import importlib.util
-    for mod in _FORBIDDEN:
-        spec = importlib.util.find_spec(mod)
-        # spec being None means not installed — that's fine
-        # But it might be found in site-packages even if not used;
-        # what matters is it's not imported into server.py's namespace.
-        pass  # We already checked sys.modules at top of file
-    # Check server module's globals
     import server
     for mod in _FORBIDDEN:
         assert mod not in vars(server), f"server.py imports forbidden module: {mod}"
     print(f"[PASS] No forbidden imports in server.py ({_FORBIDDEN})")
+
+
+def test_tools_callable() -> None:
+    from server import health, get_ticks, get_footprint, TOOL_MAP, TOOL_SCHEMAS
+    assert "health" in TOOL_MAP
+    assert "get_ticks" in TOOL_MAP
+    assert "get_footprint" in TOOL_MAP
+    assert len(TOOL_SCHEMAS) == 3
+    tool_names = {t["name"] for t in TOOL_SCHEMAS}
+    assert tool_names == {"health", "get_ticks", "get_footprint"}
+    result = health()
+    assert result["status"] == "ok"
+    assert "instruments_supported" in result
+    print(f"[PASS] All 3 tools registered and health() returns ok")
 
 
 if __name__ == "__main__":
@@ -113,6 +119,7 @@ if __name__ == "__main__":
     test_url_builder()
     test_empty_decode()
     test_no_forbidden_imports()
+    test_tools_callable()
     test_live_fetch()
 
     print("\n[DONE] All tests completed.")
