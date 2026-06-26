@@ -1,6 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # Dukascopy MCP Server — Termux start script
-# Starts the MCP server, then opens a Cloudflare trycloudflare.com tunnel.
+# Starts the MCP server, then opens a tunnel via localhost.run (SSH-based,
+# no static binary DNS issues on Android) or cloudflared if preferred.
 # The public URL is printed to stdout — add it as a custom connector in Claude.
 
 set -euo pipefail
@@ -33,24 +34,20 @@ if ! kill -0 "$SERVER_PID" 2>/dev/null; then
     exit 1
 fi
 
-echo "[+] Starting Cloudflare tunnel on http://localhost:$PORT ..."
-echo "[+] The public trycloudflare.com URL will appear below."
-echo "[+] Copy the https://....trycloudflare.com URL and add it as a custom"
-echo "    MCP connector in Claude (Settings -> Connectors -> Add custom connector)."
+echo "[+] Starting SSH tunnel via localhost.run ..."
+echo "[+] The public URL will appear below (look for https://...localhost.run)"
+echo "[+] Copy that URL + /mcp and add it as a custom MCP connector in Claude."
 echo ""
 
-# Fix Termux DNS: the default resolv.conf may point to [::1]:53 which doesn't
-# exist on Android. Cloudflared is a static Go binary so GODEBUG=netdns=cgo
-# cannot help — we must fix the file directly.
-TERMUX_RESOLV="/data/data/com.termux/files/usr/etc/resolv.conf"
-if ! grep -qE "^nameserver (1\.1\.1\.1|8\.8\.8\.8)" "$TERMUX_RESOLV" 2>/dev/null; then
-    echo "[+] Fixing DNS (replacing broken resolv.conf with 1.1.1.1 / 8.8.8.8) ..."
-    printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\n" > "$TERMUX_RESOLV"
-fi
+# localhost.run: SSH-based tunnel, uses Termux's dynamic SSH (proper Android DNS).
+# No extra binary needed — just openssh (pkg install openssh).
+# The URL printed looks like: https://xxxxxxxxxxxxxxxx.localhost.run
+# Add /mcp to that URL when configuring Claude's connector.
+ssh -o StrictHostKeyChecking=no \
+    -o ServerAliveInterval=30 \
+    -o ServerAliveCountMax=3 \
+    -R "80:localhost:$PORT" \
+    nokey@localhost.run 2>&1
 
-# cloudflared prints the URL to stderr; filter so the trycloudflare.com line is visible
-cloudflared tunnel --url "http://localhost:$PORT" 2>&1 | \
-    grep --line-buffered -E '(trycloudflare\.com|ERR|error|failed)' || true
-
-# If cloudflared exits, kill the server too
+# If the tunnel exits, kill the server too
 kill "$SERVER_PID" 2>/dev/null || true
