@@ -40,7 +40,7 @@ echo "    MCP connector in Claude (Settings -> Connectors -> Add custom connecto
 echo ""
 
 # cloudflared prints the URL to stderr; tee it so the user sees it
-cloudflared tunnel --url "http://localhost:$PORT" 2>&1 | \
+GODEBUG=netdns=cgo cloudflared tunnel --url "http://localhost:$PORT" 2>&1 | \
     grep --line-buffered -E '(trycloudflare\.com|ERR|error|failed)' || true
 
 # If cloudflared exits, kill the server too
