@@ -19,6 +19,12 @@ if command -v termux-wake-lock &>/dev/null; then
     termux-wake-lock
 fi
 
+# Kill any leftover server process from a previous run
+if pkill -f "python.*server\.py" 2>/dev/null; then
+    echo "[+] Killed leftover server process from previous run"
+    sleep 1
+fi
+
 # Start the MCP server in the background
 echo "[+] Starting MCP server..."
 PORT="$PORT" python "$SCRIPT_DIR/server.py" &
