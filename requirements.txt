@@ -6,3 +6,4 @@
 # Pure-Python HTTP server — no compilation needed, works in plain Termux
 starlette>=0.41.0
 uvicorn>=0.30.0
+pagekite>=1.5.2.0

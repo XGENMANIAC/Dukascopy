@@ -33,28 +33,27 @@ pkg install python -y
 
 Verify: `python --version` should show 3.11 or later.
 
-### 3. Install cloudflared (ARM64 binary)
+### 3. Install pagekite and register a free stable subdomain
 
-Termux runs on ARM64. Download the static cloudflared binary directly:
+Static Go tunnel binaries (cloudflared, ngrok) fail DNS resolution on stock Android
+because `/etc/resolv.conf` points to `[::1]:53` — a stub that doesn't exist — and
+the system partition is read-only. pagekite is pure Python and uses Android's native
+DNS resolver, so it works without any workarounds.
 
 ```bash
-# Create a local bin dir if it doesn't exist
-mkdir -p $HOME/.local/bin
-
-# Download cloudflared ARM64 (check https://github.com/cloudflare/cloudflared/releases
-# for the latest version and update the URL accordingly)
-curl -fsSL \
-  "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64" \
-  -o "$HOME/.local/bin/cloudflared"
-
-chmod +x "$HOME/.local/bin/cloudflared"
-
-# Add to PATH (add this line to ~/.bashrc or ~/.zshrc too)
-export PATH="$HOME/.local/bin:$PATH"
-
-# Verify
-cloudflared --version
+pip install pagekite
 ```
+
+Sign up for a **free** kite name at https://pagekite.net/signup/ (e.g. `mymcp`).
+Your permanent URL will be `https://mymcp.pagekite.me` — it never changes.
+
+```bash
+# Set your kite name (add this to ~/.bashrc so it persists across sessions)
+export PAGEKITE_NAME=mymcp
+```
+
+The first time you run `run.sh`, pagekite will ask you to confirm your account
+and save credentials to `~/.pagekite.rc`. All subsequent runs are fully automatic.
 
 ### 4. Clone this repo and install Python deps
 
@@ -102,12 +101,12 @@ Example output:
 Port: 8000
 [+] Starting MCP server...
 [+] MCP server PID: 12345
-[+] Starting Cloudflare tunnel...
-...
-https://example-random-words.trycloudflare.com
+[+] Starting pagekite tunnel...
+[+] Stable URL: https://mymcp.pagekite.me
+[+] Add https://mymcp.pagekite.me/mcp to Claude connectors.
 ```
 
-Copy that `https://` URL.
+The URL is permanent — it never changes on restart.
 
 ### Custom port
 
@@ -121,7 +120,7 @@ PORT=9000 bash run.sh
 
 1. Open Claude → **Settings** → **Connectors**
 2. Click **"Add custom connector"** (or **"Add MCP server"**)
-3. Paste your `https://xxxxx.trycloudflare.com/mcp` URL
+3. Paste `https://YOURNAME.pagekite.me/mcp` (replace `YOURNAME` with your kite name)
    - The path suffix `/mcp` is required (that's the streamable-HTTP endpoint)
 4. Save. You should immediately see the three tools available in your chat.
 
@@ -131,9 +130,9 @@ To test, ask Claude: _"Call the health tool on the Dukascopy connector."_
 
 ## Important caveats
 
-### Tunnel URL rotates on restart
-Every time you run `run.sh`, Cloudflare assigns a **new random URL**.  
-You must update the connector URL in Claude each time you restart.
+### Tunnel URL is stable across restarts
+pagekite gives you a **permanent** subdomain (`yourname.pagekite.me`).
+You configure the connector URL in Claude once and never need to update it.
 
 ### Server dies when Termux is killed
 Android aggressively kills background apps. To keep the server alive:

@@ -40,20 +40,33 @@ if ! kill -0 "$SERVER_PID" 2>/dev/null; then
     exit 1
 fi
 
-echo "[+] Starting SSH tunnel via localhost.run ..."
-echo "[+] The public URL will appear below (look for https://...localhost.run)"
-echo "[+] Copy that URL + /mcp and add it as a custom MCP connector in Claude."
+# pagekite: Python-based tunnel — works on Android because it uses Python's
+# socket layer (bionic libc getaddrinfo) rather than a static Go binary.
+# Static Go binaries (cloudflared, ngrok) fail on Android because /etc/resolv.conf
+# points to [::1]:53 which doesn't exist; this is a read-only system partition.
+#
+# Setup (one-time):
+#   pip install pagekite
+#   Sign up at https://pagekite.net/signup/ to get a free permanent kite name.
+#   export PAGEKITE_NAME=yourname   (add to ~/.bashrc)
+#
+# After first authenticated run, config is saved to ~/.pagekite.rc and
+# subsequent runs require no interaction.
+if [[ -z "${PAGEKITE_NAME:-}" ]]; then
+    echo "[!] PAGEKITE_NAME is not set."
+    echo "    1. Sign up at https://pagekite.net/signup/ for a free kite name."
+    echo "    2. Run: export PAGEKITE_NAME=yourname"
+    echo "    3. Re-run this script."
+    kill "$SERVER_PID" 2>/dev/null || true
+    exit 1
+fi
+
+echo "[+] Starting pagekite tunnel..."
+echo "[+] Stable URL: https://${PAGEKITE_NAME}.pagekite.me"
+echo "[+] Add https://${PAGEKITE_NAME}.pagekite.me/mcp to Claude connectors."
 echo ""
 
-# localhost.run: SSH-based tunnel, uses Termux's dynamic SSH (proper Android DNS).
-# No extra binary needed — just openssh (pkg install openssh).
-# The URL printed looks like: https://xxxxxxxxxxxxxxxx.localhost.run
-# Add /mcp to that URL when configuring Claude's connector.
-ssh -o StrictHostKeyChecking=no \
-    -o ServerAliveInterval=30 \
-    -o ServerAliveCountMax=3 \
-    -R "80:localhost:$PORT" \
-    nokey@localhost.run 2>&1
+python -m pagekite "$PORT" "${PAGEKITE_NAME}.pagekite.me" 2>&1
 
 # If the tunnel exits, kill the server too
 kill "$SERVER_PID" 2>/dev/null || true
