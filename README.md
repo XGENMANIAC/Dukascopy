@@ -33,27 +33,32 @@ pkg install python -y
 
 Verify: `python --version` should show 3.11 or later.
 
-### 3. Install pagekite and register a free stable subdomain
+### 3. Set up ngrok with a static free domain and proot DNS fix
 
-Static Go tunnel binaries (cloudflared, ngrok) fail DNS resolution on stock Android
-because `/etc/resolv.conf` points to `[::1]:53` — a stub that doesn't exist — and
-the system partition is read-only. pagekite is pure Python and uses Android's native
-DNS resolver, so it works without any workarounds.
-
-```bash
-pip install pagekite
-```
-
-Sign up for a **free** kite name at https://pagekite.net/signup/ (e.g. `mymcp`).
-Your permanent URL will be `https://mymcp.pagekite.me` — it never changes.
+Static Go binaries (cloudflared, ngrok) fail DNS on stock Android because
+`/etc/resolv.conf` points to `[::1]:53` — a non-existent IPv6 stub on a read-only
+system partition. `proot` (available in Termux, no root needed) can bind-mount a
+writable `resolv.conf` over it for just the ngrok process, fixing the issue.
 
 ```bash
-# Set your kite name (add this to ~/.bashrc so it persists across sessions)
-export PAGEKITE_NAME=mymcp
+# Install proot — fixes Android DNS for ngrok without root
+pkg install proot
+
+# Download ngrok ARM64 binary
+mkdir -p $HOME/.local/bin
+curl -fsSL https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-arm64.tgz \
+  | tar xz -C $HOME/.local/bin
+export PATH="$HOME/.local/bin:$PATH"   # add to ~/.bashrc too
+
+# Sign up at https://ngrok.com and get a free static domain, then:
+ngrok config add-authtoken YOUR_TOKEN_HERE
+
+# Set your static domain (add to ~/.bashrc so it persists)
+export NGROK_DOMAIN=yourname.ngrok-free.dev
 ```
 
-The first time you run `run.sh`, pagekite will ask you to confirm your account
-and save credentials to `~/.pagekite.rc`. All subsequent runs are fully automatic.
+Your permanent URL will be `https://yourname.ngrok-free.dev` — it never changes
+across restarts.
 
 ### 4. Clone this repo and install Python deps
 
@@ -101,9 +106,9 @@ Example output:
 Port: 8000
 [+] Starting MCP server...
 [+] MCP server PID: 12345
-[+] Starting pagekite tunnel...
-[+] Stable URL: https://mymcp.pagekite.me
-[+] Add https://mymcp.pagekite.me/mcp to Claude connectors.
+[+] Starting ngrok tunnel (proot DNS fix active)...
+[+] Stable URL: https://yourname.ngrok-free.dev
+[+] Add https://yourname.ngrok-free.dev/mcp to Claude connectors.
 ```
 
 The URL is permanent — it never changes on restart.
@@ -120,7 +125,7 @@ PORT=9000 bash run.sh
 
 1. Open Claude → **Settings** → **Connectors**
 2. Click **"Add custom connector"** (or **"Add MCP server"**)
-3. Paste `https://YOURNAME.pagekite.me/mcp` (replace `YOURNAME` with your kite name)
+3. Paste `https://yourname.ngrok-free.dev/mcp` (replace with your static ngrok domain)
    - The path suffix `/mcp` is required (that's the streamable-HTTP endpoint)
 4. Save. You should immediately see the three tools available in your chat.
 
@@ -131,7 +136,7 @@ To test, ask Claude: _"Call the health tool on the Dukascopy connector."_
 ## Important caveats
 
 ### Tunnel URL is stable across restarts
-pagekite gives you a **permanent** subdomain (`yourname.pagekite.me`).
+ngrok free static domains (`yourname.ngrok-free.dev`) are permanent.
 You configure the connector URL in Claude once and never need to update it.
 
 ### Server dies when Termux is killed

@@ -40,33 +40,43 @@ if ! kill -0 "$SERVER_PID" 2>/dev/null; then
     exit 1
 fi
 
-# pagekite: Python-based tunnel — works on Android because it uses Python's
-# socket layer (bionic libc getaddrinfo) rather than a static Go binary.
-# Static Go binaries (cloudflared, ngrok) fail on Android because /etc/resolv.conf
-# points to [::1]:53 which doesn't exist; this is a read-only system partition.
+# ngrok static domain via proot DNS fix.
+# Static Go binaries (ngrok, cloudflared) read /etc/resolv.conf which on Android
+# points to [::1]:53 — a non-existent stub. /etc/resolv.conf is on a read-only
+# system partition. proot bind-mounts a user-writable resolv.conf over it for
+# just the ngrok child process — no root required.
 #
 # Setup (one-time):
-#   pip install pagekite
-#   Sign up at https://pagekite.net/signup/ to get a free permanent kite name.
-#   export PAGEKITE_NAME=yourname   (add to ~/.bashrc)
-#
-# After first authenticated run, config is saved to ~/.pagekite.rc and
-# subsequent runs require no interaction.
-if [[ -z "${PAGEKITE_NAME:-}" ]]; then
-    echo "[!] PAGEKITE_NAME is not set."
-    echo "    1. Sign up at https://pagekite.net/signup/ for a free kite name."
-    echo "    2. Run: export PAGEKITE_NAME=yourname"
-    echo "    3. Re-run this script."
+#   pkg install proot
+#   mkdir -p $HOME/.local/bin
+#   curl -fsSL https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-arm64.tgz \
+#     | tar xz -C $HOME/.local/bin
+#   ngrok config add-authtoken YOUR_TOKEN
+#   export NGROK_DOMAIN=yourname.ngrok-free.dev   (add to ~/.bashrc)
+
+if [[ -z "${NGROK_DOMAIN:-}" ]]; then
+    echo "[!] NGROK_DOMAIN is not set."
+    echo "    export NGROK_DOMAIN=yourname.ngrok-free.dev  (add to ~/.bashrc)"
     kill "$SERVER_PID" 2>/dev/null || true
     exit 1
 fi
 
-echo "[+] Starting pagekite tunnel..."
-echo "[+] Stable URL: https://${PAGEKITE_NAME}.pagekite.me"
-echo "[+] Add https://${PAGEKITE_NAME}.pagekite.me/mcp to Claude connectors."
+if ! command -v proot &>/dev/null; then
+    echo "[!] proot not found. Run: pkg install proot"
+    kill "$SERVER_PID" 2>/dev/null || true
+    exit 1
+fi
+
+# Write real nameservers to a user-writable path; proot mounts it over /etc/resolv.conf
+printf 'nameserver 8.8.8.8\nnameserver 1.1.1.1\n' > "$HOME/.resolv.conf"
+
+echo "[+] Starting ngrok tunnel (proot DNS fix active)..."
+echo "[+] Stable URL: https://${NGROK_DOMAIN}"
+echo "[+] Add https://${NGROK_DOMAIN}/mcp to Claude connectors."
 echo ""
 
-python -m pagekite "$PORT" "${PAGEKITE_NAME}.pagekite.me" 2>&1
+proot -b "$HOME/.resolv.conf:/etc/resolv.conf" \
+    ngrok http --url="$NGROK_DOMAIN" "$PORT" 2>&1
 
 # If the tunnel exits, kill the server too
 kill "$SERVER_PID" 2>/dev/null || true
