@@ -9,10 +9,11 @@ set -euo pipefail
 PORT="${PORT:-8000}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Source ~/.bashrc so exports like NGROK_DOMAIN are available when run.sh is
-# invoked from a non-interactive shell (which doesn't auto-source ~/.bashrc).
-# shellcheck disable=SC1090
-[[ -f "$HOME/.bashrc" ]] && source "$HOME/.bashrc" 2>/dev/null || true
+# Load config from a project .env file (no interactive-shell guard, always works).
+# ~/.bashrc is skipped on purpose — Termux's default .bashrc bails early when
+# PS1 is unset (non-interactive shells), so exports placed there are invisible.
+# shellcheck disable=SC1090,SC1091
+[[ -f "$SCRIPT_DIR/.env" ]] && source "$SCRIPT_DIR/.env"
 
 echo "=== Dukascopy MCP Server ==="
 echo "Port: $PORT"
@@ -61,7 +62,8 @@ fi
 
 if [[ -z "${NGROK_DOMAIN:-}" ]]; then
     echo "[!] NGROK_DOMAIN is not set."
-    echo "    export NGROK_DOMAIN=yourname.ngrok-free.dev  (add to ~/.bashrc)"
+    echo "    Create $SCRIPT_DIR/.env with:"
+    echo "      NGROK_DOMAIN=yourname.ngrok-free.dev"
     kill "$SERVER_PID" 2>/dev/null || true
     exit 1
 fi
