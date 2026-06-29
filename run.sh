@@ -9,6 +9,11 @@ set -euo pipefail
 PORT="${PORT:-8000}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# Source ~/.bashrc so exports like NGROK_DOMAIN are available when run.sh is
+# invoked from a non-interactive shell (which doesn't auto-source ~/.bashrc).
+# shellcheck disable=SC1090
+[[ -f "$HOME/.bashrc" ]] && source "$HOME/.bashrc" 2>/dev/null || true
+
 echo "=== Dukascopy MCP Server ==="
 echo "Port: $PORT"
 echo ""
